@@ -1,0 +1,629 @@
+<!doctype html>
+<!--
+  COPYRIGHT © 2025 DOMINIK
+  ALL RIGHTS RESERVED.
+-->
+
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>THE KING — v3</title>
+  <style>
+    html,body{margin:0;height:100%;background:#0c0f14;color:#e8eef7;font-family:system-ui}
+    canvas{display:block;margin:0 auto;background:#101622}
+    #hud{position:fixed;left:10px;top:10px;background:rgba(0,0,0,.55);padding:8px 10px;border-radius:8px;font-size:14px;z-index:2}
+    #log{position:fixed;left:10px;bottom:10px;background:rgba(0,0,0,.55);padding:8px 10px;border-radius:8px;font-size:13px;max-width:42vw;z-index:2;max-height:32vh;overflow:auto}
+
+    #menu{position:fixed; inset:0; background:rgba(5,8,12,0.92);
+      display:flex; align-items:center; justify-content:center; z-index:3;}
+    #menuCard{width:560px; background:#0f172a; border:1px solid #1f2937;
+      padding:18px; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.5)}
+    h1{margin:0 0 8px 0}
+    .row{display:flex; gap:8px; margin:8px 0}
+    input,select,button{
+      font-size:14px; padding:8px 10px; border-radius:8px; border:1px solid #334155;
+      background:#0b1220; color:#e8eef7; outline:none; flex:1;}
+    button{cursor:pointer; background:#111827}
+    button:hover{background:#172554}
+    .roomItem{display:flex; justify-content:space-between; align-items:center;
+      padding:8px 10px; background:#0b1220; border:1px solid #1f2937; border-radius:8px; margin:6px 0;}
+    .badge{font-size:12px; opacity:.85}
+
+    #celebrate,#countdownOverlay,#loadingOverlay{
+      position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+      background:rgba(0,0,0,0.75); z-index:4; font-size:48px; font-weight:800;
+      text-shadow:0 4px 18px rgba(0,0,0,0.9);
+    }
+    #countdownOverlay{font-size:64px;}
+    #loadingOverlay{font-size:22px;font-weight:600;flex-direction:column;gap:10px;}
+
+    #doorPrompt{
+      position:fixed; left:50%; bottom:18px; transform:translateX(-50%);
+      background:rgba(0,0,0,0.6); padding:6px 10px; border-radius:8px;
+      font-size:14px; display:none; z-index:2;
+    }
+
+    #chatBox{
+      position:fixed; left:10px; bottom:10px; width:340px; z-index:5; display:none;
+      background:#0b1220; border:1px solid #334155; border-radius:8px; padding:6px;
+    }
+    #chatInput{width:100%; box-sizing:border-box;}
+  </style>
+</head>
+<body>
+  <div id="celebrate"></div>
+  <div id="countdownOverlay"></div>
+  <div id="loadingOverlay">
+    <div>Loading / Connecting...</div>
+    <div class="badge" id="loadingText"></div>
+  </div>
+  <div id="doorPrompt">Press E to toggle door</div>
+
+  <div id="chatBox">
+    <input id="chatInput" placeholder="Team chat ( /all message )"/>
+  </div>
+
+  <div id="menu">
+    <div id="menuCard">
+      <h1>THE KING</h1>
+      <div class="badge" id="menuStatus">Connecting...</div>
+
+      <div class="row">
+        <input id="playerName" placeholder="Player név (max 16)" />
+        <select id="skinSelect">
+          <option value="default">Default</option>
+          <option value="red">Red Skin</option>
+          <option value="blue">Blue Skin</option>
+          <option value="gold">Gold Skin</option>
+          <option value="neon">Neon Skin</option>
+        </select>
+      </div>
+
+      <div class="row">
+        <input id="roomNameInput" placeholder="Room név (rooms.json)" />
+        <button id="createBtn">Create Room</button>
+      </div>
+
+      <div class="row">
+        <button id="quickBtn">Quick Match</button>
+        <button id="refreshBtn">Refresh Rooms</button>
+      </div>
+
+      <div id="roomsList"></div>
+
+      <div class="badge" style="margin-top:8px;">
+        Enter = chat, R = reload, E = door. /all msg = global.
+      </div>
+    </div>
+  </div>
+
+  <div id="hud">HUD</div>
+  <div id="log"></div>
+  <canvas id="c" width="960" height="540"></canvas>
+
+<script>
+const CLIENT_API_VERSION = 3;
+
+const canvas=document.getElementById("c");
+const ctx=canvas.getContext("2d");
+const hud=document.getElementById("hud");
+const logEl=document.getElementById("log");
+const menu=document.getElementById("menu");
+const menuStatus=document.getElementById("menuStatus");
+const roomsList=document.getElementById("roomsList");
+const createBtn=document.getElementById("createBtn");
+const quickBtn=document.getElementById("quickBtn");
+const refreshBtn=document.getElementById("refreshBtn");
+const roomNameInput=document.getElementById("roomNameInput");
+const playerNameInput=document.getElementById("playerName");
+const skinSelect=document.getElementById("skinSelect");
+
+const celebrate=document.getElementById("celebrate");
+const countdownOverlay=document.getElementById("countdownOverlay");
+const loadingOverlay=document.getElementById("loadingOverlay");
+const loadingText=document.getElementById("loadingText");
+
+const chatBox=document.getElementById("chatBox");
+const chatInput=document.getElementById("chatInput");
+
+const SERVER_URL="ws://stat-warcraft-expression-then.trycloudflare.com";
+const INPUT_RATE=60;
+
+let ws=null;
+let myId=null, roomId=null;
+let state=null;
+let started=false;
+
+let keys={}, mouse={x:0,y:0,down:false};
+let CAMERA={x:0,y:0};
+
+const spriteCache={};
+
+
+// ====== Simple WebAudio SFX ======
+let audioCtx=null;
+function sfx(freq=440, dur=0.08, type="square", gain=0.05){
+  try{
+    if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    const o=audioCtx.createOscillator();
+    const g=audioCtx.createGain();
+    o.type=type; o.frequency.value=freq;
+    g.gain.value=gain;
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start();
+    o.stop(audioCtx.currentTime+dur);
+  }catch{}
+}
+const SFX={
+  shoot:()=>sfx(700,0.04,"square",0.03),
+  reload:()=>sfx(260,0.12,"sawtooth",0.04),
+  pickup:()=>sfx(520,0.08,"triangle",0.05),
+  door:()=>sfx(180,0.06,"square",0.05),
+  win:()=>{sfx(523,0.12,"triangle",0.05); setTimeout(()=>sfx(659,0.12,"triangle",0.05),140);}
+};
+
+function addLog(t){ logEl.innerHTML=t+"<br/>"+logEl.innerHTML; }
+function safeSend(o){ if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); }
+
+// ===== LOADING =====
+function showLoading(text){
+  loadingOverlay.style.display="flex";
+  loadingText.textContent=text||"";
+}
+function hideLoading(){ loadingOverlay.style.display="none"; }
+
+let reconnectTry=0, reconnectTimer=null;
+function connect(){
+  clearTimeout(reconnectTimer);
+  showLoading("Connecting to server...");
+  ws=new WebSocket(SERVER_URL);
+
+  ws.onopen=()=>{
+    reconnectTry=0;
+    menuStatus.textContent="Connected.";
+    safeSend({type:"list_rooms"});
+  };
+
+  ws.onmessage=(e)=>{
+    let msg; try{msg=JSON.parse(e.data);}catch{return;}
+
+    switch(msg.type){
+      case "hello":
+        myId=msg.id;
+        if(msg.apiVersion!==CLIENT_API_VERSION){
+          showLoading(`API mismatch! Server=${msg.apiVersion} Client=${CLIENT_API_VERSION}`);
+          ws.close();
+          return;
+        }
+        // handshake reply with name+skin
+        safeSend({
+          type:"client_hello",
+          apiVersion: CLIENT_API_VERSION,
+          name: (playerNameInput.value||"Player").trim(),
+          skin: skinSelect.value
+        });
+        hideLoading();
+        break;
+
+      case "api_mismatch":
+        showLoading(`API mismatch! Server=${msg.serverApi} Client=${msg.clientApi}`);
+        ws.close();
+        break;
+
+      case "rooms":
+        renderRooms(msg.rooms||[]);
+        break;
+
+      case "room_created":
+        showLoading("Joining new room...");
+        safeSend({type:"join_room", roomId: msg.roomId});
+        break;
+
+      case "join_fail":
+        hideLoading();
+        addLog("Join fail: "+msg.reason);
+        break;
+
+      case "joined":
+        hideLoading();
+        roomId=msg.roomId;
+        addLog(`Joined Game #${roomId} (ID:#${msg.gameUid}) — ${msg.roomName}`);
+        break;
+
+      case "start":
+        if(msg.roomId===roomId){
+          started=true;
+          menu.style.display="none";
+          celebrate.style.display="none";
+          addLog("Match started!");
+        }
+        break;
+
+      case "match_win":
+        if(msg.roomId===roomId){
+          showCelebrate(msg.winner);
+          SFX.win();
+          started=false;
+          menu.style.display="flex";
+        }
+        break;
+
+      case "chat":
+        addLog(`[${msg.team}] ${msg.from}: ${msg.text}`);
+        break;
+
+// a kód elejére tedd:
+let lastFeedMsg = "";
+
+case "state":
+    if(msg.roomId === roomId){
+        state = msg;
+        started = !!msg.started;
+
+        if(!started){
+            menu.style.display = "flex";
+        }
+
+        if(msg.phase === "countdown"){
+            countdownOverlay.style.display = "flex";
+            countdownOverlay.textContent = Math.ceil(msg.countdownLeft || 0);
+        } else {
+            countdownOverlay.style.display = "none";
+        }
+
+        // FEED HANDLING – ANTI-REPEAT
+        if(Array.isArray(msg.feed) && msg.feed.length){
+            const newMsg = msg.feed[msg.feed.length - 1];
+
+            if(newMsg && newMsg !== lastFeedMsg){
+                // csak akkor logolunk + hang, ha ÚJ üzenet
+                lastFeedMsg = newMsg;
+
+                addLog(newMsg);
+
+                if(newMsg.includes("picked up")) SFX.pickup();
+                if(newMsg.includes("Door")) SFX.door();
+            }
+        }
+    }
+    break;
+
+    }
+  };
+
+  ws.onclose=()=>{
+    showLoading("Disconnected. Reconnecting...");
+    reconnectTry++;
+    const delay=Math.min(2000*reconnectTry,8000);
+    reconnectTimer=setTimeout(connect,delay);
+  };
+  ws.onerror=()=>{ try{ws.close();}catch{}; };
+}
+connect();
+
+// ===== MENU actions =====
+refreshBtn.onclick=()=>safeSend({type:"list_rooms"});
+createBtn.onclick=()=>{
+  showLoading("Creating room...");
+  safeSend({
+    type:"create_room",
+    name: roomNameInput.value.trim()
+  });
+};
+quickBtn.onclick=()=>{
+  showLoading("Creating room...");
+  safeSend({
+    type:"quick_match",
+    name: roomNameInput.value.trim()
+  });
+};
+
+function renderRooms(rooms){
+  roomsList.innerHTML="";
+  if(!rooms.length){
+    roomsList.innerHTML=`<div class="badge">Nincs aktív room. Create/Quick Match.</div>`;
+    return;
+  }
+  rooms.sort((a,b)=>Number(a.id)-Number(b.id));
+
+  for(const r of rooms){
+    const div=document.createElement("div");
+    div.className="roomItem";
+    const pc=r.players??0;
+    const mapLabel=r.mapName||"Random";
+    const phase=r.started ? (r.phase||"live").toUpperCase() : "LOBBY";
+
+    div.innerHTML=`
+      <div>
+        <div><b>Game #${r.id}</b></div>
+        <div class="badge">ID:#${r.gameUid} | ${r.name}</div>
+        <div class="badge">${pc}/${r.minPlayers||4} | Map:${mapLabel} | ${phase}</div>
+      </div>
+      <button>${r.started?"Spectate":"Join"}</button>
+    `;
+    div.querySelector("button").onclick=()=>{
+      showLoading("Joining room...");
+      safeSend({type:"join_room", roomId:r.id});
+    };
+    roomsList.appendChild(div);
+  }
+}
+
+// ===== CHAT =====
+let chatOpen=false;
+window.addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase();
+
+  if(k==="enter"){
+    e.preventDefault();
+    if(!chatOpen){
+      chatOpen=true;
+      chatBox.style.display="block";
+      chatInput.focus();
+      return;
+    } else {
+      const text=chatInput.value.trim();
+      if(text) safeSend({type:"chat", text});
+      chatInput.value="";
+      chatOpen=false;
+      chatBox.style.display="none";
+      canvas.focus();
+      return;
+    }
+  }
+
+  if(chatOpen) return; // ne mozogjon chat közben
+
+  keys[k]=true;
+  if(k==="e") tryToggleDoor();
+  if(k==="r") { safeSend({type:"reload"}); SFX.reload(); }
+});
+window.addEventListener("keyup",e=>{
+  if(chatOpen) return;
+  keys[e.key.toLowerCase()]=false;
+});
+
+// ===== INPUT =====
+canvas.addEventListener("mousemove",e=>{
+  const r=canvas.getBoundingClientRect();
+  mouse.x=e.clientX-r.left; mouse.y=e.clientY-r.top;
+});
+canvas.addEventListener("mousedown",()=>{
+  if(chatOpen) return;
+  mouse.down=true; shoot();
+});
+canvas.addEventListener("mouseup",()=>mouse.down=false);
+
+function sendInput(){
+  if(!state||!started||state.phase!=="live") return;
+  const me=state.players?.[myId];
+  if(!me||me.dead||me.reloading) return;
+
+  let vx=0,vy=0;
+  if(keys["w"])vy-=1;
+  if(keys["s"])vy+=1;
+  if(keys["a"])vx-=1;
+  if(keys["d"])vx+=1;
+
+  const mag=Math.hypot(vx,vy)||1;
+  vx/=mag; vy/=mag;
+  safeSend({type:"input",vx,vy});
+}
+setInterval(sendInput,1000/INPUT_RATE);
+
+function shoot(){
+  if(!state||!started||state.phase!=="live") return;
+  const me=state.players?.[myId];
+  if(!me||me.dead||me.reloading) return;
+  if(me.magAmmo<=0){ SFX.reload(); return; }
+
+  const dx=(mouse.x+CAMERA.x)-me.x;
+  const dy=(mouse.y+CAMERA.y)-me.y;
+  safeSend({type:"shoot",dx,dy});
+  SFX.shoot();
+}
+
+function tryToggleDoor(){
+  if(!state||!started||state.phase!=="live") return;
+  const me=state.players?.[myId];
+  if(!me||me.dead) return;
+
+  const doors=state.map?.doors||[];
+  if(!doors.length) return;
+
+  let best=null, bestD=1e9;
+  for(const d of doors){
+    const r=d.rect;
+    const cx=r[0]+r[2]/2, cy=r[1]+r[3]/2;
+    const d2=(me.x-cx)**2+(me.y-cy)**2;
+    if(d2<bestD){bestD=d2; best=d;}
+  }
+  if(best) safeSend({type:"door_toggle", doorId: best.id});
+}
+
+// ===== SPRITES / SKINS =====
+function getSprite(url){
+  if(!url) return null;
+  if(spriteCache[url]) return spriteCache[url];
+  const img=new Image(); img.src=url;
+  spriteCache[url]=img; return img;
+}
+
+function skinColor(skin){
+  switch(skin){
+    case "red": return "#ef4444";
+    case "blue": return "#3b82f6";
+    case "gold": return "#facc15";
+    case "neon": return "#22d3ee";
+    default: return null;
+  }
+}
+
+// ===== RENDER =====
+function drawRect(x,y,w,h,fill,stroke){
+  ctx.fillStyle=fill; ctx.fillRect(x,y,w,h);
+  if(stroke){ ctx.strokeStyle=stroke; ctx.strokeRect(x,y,w,h); }
+}
+
+function showCelebrate(winner){
+  celebrate.style.display="flex";
+  celebrate.textContent = winner==="capturers" ? "CAPTURERS WIN!" : "DEFENDERS WIN!";
+  celebrate.style.color = winner==="capturers" ? "#f87171" : "#34d399";
+  setTimeout(()=>celebrate.style.display="none", 2500);
+}
+
+function drawMinimap(map, players){
+  const mmW=220, mmH=140;
+  const pad=12;
+  const x0=canvas.width-mmW-pad, y0=pad;
+  const world=map?.world||[1600,900];
+  const sx=mmW/world[0], sy=mmH/world[1];
+
+  ctx.save(); ctx.globalAlpha=0.9;
+  ctx.fillStyle="rgba(0,0,0,0.6)";
+  ctx.fillRect(x0,y0,mmW,mmH);
+
+  ctx.fillStyle="rgba(148,163,184,0.7)";
+  for(const w of (map?.walls||[])){
+    ctx.fillRect(x0+w[0]*sx, y0+w[1]*sy, w[2]*sx, w[3]*sy);
+  }
+
+  for(const d of (map?.doors||[])){
+    const r=d.rect;
+    ctx.fillStyle=d.open?"rgba(52,211,153,0.9)":"rgba(248,113,113,0.9)";
+    ctx.fillRect(x0+r[0]*sx, y0+r[1]*sy, r[2]*sx, r[3]*sy);
+  }
+
+  for(const pid in players){
+    const p=players[pid]; if(!p) continue;
+    ctx.fillStyle = p.role==="capturer" ? "#f87171" : "#34d399";
+    ctx.fillRect(x0+p.x*sx-2, y0+p.y*sy-2, 4, 4);
+  }
+  ctx.restore();
+}
+
+function updateDoorPrompt(me, doors){
+  let near=false;
+  for(const d of doors){
+    const r=d.rect;
+    const cx=r[0]+r[2]/2, cy=r[1]+r[3]/2;
+    const d2=(me.x-cx)**2+(me.y-cy)**2;
+    if(d2 < 80*80){ near=true; break; }
+  }
+  doorPrompt.style.display = near ? "block" : "none";
+}
+
+function draw(){
+  requestAnimationFrame(draw);
+  if(!state||!myId) return;
+
+  const players=state.players||{};
+  const me=players[myId]; if(!me) return;
+
+  const map=state.map||{};
+  const bases=map.bases||{def:[0,0,0,0],att:[0,0,0,0]};
+  const walls=map.walls||[];
+  const doors=map.doors||[];
+  const sprites=map.sprites||{};
+
+  CAMERA.x=me.x-canvas.width/2;
+  CAMERA.y=me.y-canvas.height/2;
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle="#0f1522"; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  ctx.save(); ctx.translate(-CAMERA.x,-CAMERA.y);
+
+  if(bases.def) drawRect(...bases.def,"rgba(52,211,153,0.08)","rgba(52,211,153,0.25)");
+  if(bases.att) drawRect(...bases.att,"rgba(248,113,113,0.08)","rgba(248,113,113,0.25)");
+
+  for(const w of walls){
+    drawRect(w[0],w[1],w[2],w[3],"rgba(148,163,184,0.22)");
+  }
+
+  for(const d of doors){
+    const r=d.rect;
+    drawRect(r[0],r[1],r[2],r[3], d.open?"rgba(52,211,153,0.35)":"rgba(248,113,113,0.35)");
+  }
+
+  for(const wid in (state.weapons||{})){
+    const w=state.weapons[wid];
+    ctx.fillStyle="#a78bfa";
+    ctx.beginPath(); ctx.arc(w.x,w.y,8,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle="#cbd5e1";
+    ctx.fillText(`${w.kind}`,w.x+8,w.y-8);
+  }
+
+  ctx.fillStyle="#e2e8f0";
+  for(const b of (state.bullets||[])){
+    ctx.beginPath(); ctx.arc(b.x,b.y,3,0,Math.PI*2); ctx.fill();
+  }
+
+  for(const pid in players){
+    const p=players[pid];
+    const isMe=pid===myId;
+
+    ctx.globalAlpha=p.dead?0.35:1.0;
+
+    const sprUrl=sprites[p.role];
+    const img=getSprite(sprUrl);
+
+    if(img && img.complete){
+      ctx.drawImage(img, p.x-16, p.y-16, 32, 32);
+    } else {
+      const skinCol = skinColor(p.skin);
+      const sideCol = p.role==="capturer" ? "#f87171" : "#34d399";
+      ctx.fillStyle = skinCol || sideCol;
+      ctx.beginPath(); ctx.arc(p.x,p.y,16,0,Math.PI*2); ctx.fill();
+    }
+
+    const ringColor =
+      p.role==="king" ? "#facc15" :
+      p.role==="bodyguard" ? "#60a5fa" :
+      "#a78bfa";
+
+    ctx.strokeStyle=ringColor; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(p.x,p.y,19,0,Math.PI*2); ctx.stroke();
+
+    ctx.globalAlpha=1.0;
+
+    ctx.fillStyle="rgba(0,0,0,.6)";
+    ctx.fillRect(p.x-18,p.y-30,36,6);
+    ctx.fillStyle="#22c55e";
+    ctx.fillRect(p.x-18,p.y-30,36*((p.hp||0)/100),6);
+
+    ctx.fillStyle=isMe?"#fff":"#cbd5e1";
+    ctx.fillText(`${p.name}`, p.x-22, p.y-40);
+  }
+
+  const king=Object.values(players).find(p=>p.role==="king");
+  if(king){
+    ctx.fillStyle="rgba(0,0,0,.6)";
+    ctx.fillRect(king.x-30, king.y+26, 60, 6);
+    ctx.fillStyle="#f97316";
+    ctx.fillRect(king.x-30, king.y+26, 60*(state.capture||0), 6);
+  }
+
+  ctx.restore();
+
+  drawMinimap(map, players);
+  updateDoorPrompt(me, doors);
+
+  const pc=Object.keys(players).length;
+  const score=state.score||{capturers:0,defenders:0};
+  const atype = me.ammoType;
+  const pool = me.ammoPool?.[atype] ?? 0;
+
+  hud.textContent=
+    `${state.roomName} | Game #${state.roomId} ID:#${state.gameUid}`
+    + ` | ${state.phase?.toUpperCase()||"?"} (${pc}/${state.minPlayers})`
+    + ` | Round ${state.round} | Time ${state.roundTimeLeft}s`
+    + ` | Score C:${score.capturers} D:${score.defenders}`
+    + ` | You: ${me.role} ${me.weapon}`
+    + ` | Ammo(${atype}) ${me.magAmmo}/${pool}`
+    + (me.reloading ? " (RELOADING)" : "");
+}
+draw();
+</script>
+</body>
+</html>
